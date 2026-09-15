@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OM Logistics — Document Processor</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css">
 <style>
   :root {
     --bg: #0f1420;
@@ -161,6 +162,7 @@
     display: flex;
     align-items: flex-end;
     gap: 10px;
+    flex-wrap: wrap;
   }
   .preview canvas, .preview img {
     max-width: 140px;
@@ -179,12 +181,89 @@
   .preview .status.warn {
     color: var(--warn);
   }
+  .fixcrop-btn {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  .fixcrop-btn:hover {
+    border-color: var(--accent);
+  }
+
+  /* Crop modal */
+  .crop-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+  }
+  .crop-modal.open {
+    display: flex;
+  }
+  .crop-modal-inner {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 100%;
+    max-width: 560px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .crop-modal-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .crop-image-wrap {
+    flex: 1;
+    min-height: 320px;
+    max-height: 60vh;
+    background: #05070c;
+  }
+  .crop-image-wrap img {
+    display: block;
+    max-width: 100%;
+  }
+  .crop-modal-footer {
+    padding: 14px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+  .crop-modal-footer button {
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 8px 16px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+  }
+  .crop-modal-footer button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Document Processor — V0.1</h1>
-  <div class="subtitle">Step 4: images are auto-cropped to the document edges.</div>
+  <div class="subtitle">Step 5: fix any crop by hand when auto-crop gets it wrong.</div>
   <div class="cvstatus" id="cvstatus"><span class="dot"></span><span id="cvstatusText">Loading edge-detection engine…</span></div>
 
   <label class="dropzone" id="dropzone">
@@ -196,8 +275,23 @@
   <div class="groups" id="groups"></div>
 </div>
 
+<!-- Manual crop modal -->
+<div class="crop-modal" id="cropModal">
+  <div class="crop-modal-inner">
+    <div class="crop-modal-header">Adjust crop</div>
+    <div class="crop-image-wrap">
+      <img id="cropTargetImg">
+    </div>
+    <div class="crop-modal-footer">
+      <button id="cropCancelBtn">Cancel</button>
+      <button id="cropConfirmBtn" class="primary">Use this crop</button>
+    </div>
+  </div>
+</div>
+
 <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvScriptLoaded();" type="text/javascript"></script>
 <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
 
 <script>
   // ---- OpenCV / jscanify readiness ----
@@ -208,8 +302,7 @@
   function onOpenCvScriptLoaded() {
     cv['onRuntimeInitialized'] = () => {
       cvReady = true;
-      const statusEl = document.getElementById('cvstatus');
-      statusEl.classList.add('ready');
+      document.getElementById('cvstatus').classList.add('ready');
       document.getElementById('cvstatusText').textContent = 'Edge-detection engine ready';
       resolveCvReady();
     };
@@ -258,14 +351,14 @@
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
-  // ---- Auto-crop ----
-  // Crops to the detected document edges without resizing beyond the
-  // original pixel dimensions (no upscaling, no recompression).
+  // Auto-crop is best-effort: it works well on a plain, high-contrast
+  // background but can miss the edges on busy backgrounds (bedsheets,
+  // cluttered desks, etc). That's expected — "Fix crop" below is the
+  // reliable fallback for those cases.
   function autoCropImage(imgEl) {
     try {
       const scanner = new jscanify();
-      const result = scanner.extractPaper(imgEl, imgEl.naturalWidth, imgEl.naturalHeight);
-      return result; // canvas, or null if no document edges were found
+      return scanner.extractPaper(imgEl, imgEl.naturalWidth, imgEl.naturalHeight);
     } catch (err) {
       return null;
     }
@@ -285,7 +378,12 @@
     files.forEach(file => {
       const type = classify(file.name);
       const pageNum = extractPageNumber(file.name);
-      const entry = { file, pageNum, previewId: 'preview-' + (previewCounter++) };
+      const entry = {
+        file,
+        pageNum,
+        previewId: 'preview-' + (previewCounter++),
+        objectUrl: URL.createObjectURL(file),
+      };
 
       if (!type) {
         unclassified.push(entry);
@@ -340,6 +438,14 @@
     return card;
   }
 
+  function renderFixCropButton(entry) {
+    const btn = document.createElement('button');
+    btn.className = 'fixcrop-btn';
+    btn.textContent = 'Fix crop';
+    btn.onclick = () => openCropModal(entry);
+    return btn;
+  }
+
   async function processCropPreview(entry) {
     const container = document.getElementById(entry.previewId);
     if (!container) return;
@@ -347,9 +453,9 @@
     await cvReadyPromise;
     container.querySelector('.status').textContent = 'Detecting document edges…';
 
-    const url = URL.createObjectURL(entry.file);
     const img = new Image();
     img.onload = () => {
+      entry.imgEl = img; // keep for the manual crop modal
       const cropped = autoCropImage(img);
       container.innerHTML = '';
 
@@ -362,19 +468,20 @@
         container.appendChild(status);
       } else {
         const thumb = document.createElement('img');
-        thumb.src = url;
+        thumb.src = entry.objectUrl;
         container.appendChild(thumb);
         const status = document.createElement('span');
         status.className = 'status warn';
         status.textContent = "Couldn't detect edges — using original";
         container.appendChild(status);
       }
+      container.appendChild(renderFixCropButton(entry));
     };
     img.onerror = () => {
       const container2 = document.getElementById(entry.previewId);
       if (container2) container2.innerHTML = '<span class="status warn">Couldn\'t load image</span>';
     };
-    img.src = url;
+    img.src = entry.objectUrl;
   }
 
   function renderFiles(files) {
@@ -422,6 +529,66 @@
     const files = Array.from(e.dataTransfer.files);
     fileInput.files = e.dataTransfer.files;
     renderFiles(files);
+  });
+
+  // ---- Manual crop modal (Cropper.js) ----
+  let activeCropper = null;
+  let activeEntry = null;
+  const cropModal = document.getElementById('cropModal');
+  const cropTargetImg = document.getElementById('cropTargetImg');
+
+  function openCropModal(entry) {
+    activeEntry = entry;
+    cropModal.classList.add('open');
+    cropTargetImg.src = entry.objectUrl;
+
+    const initCropper = () => {
+      if (activeCropper) activeCropper.destroy();
+      activeCropper = new Cropper(cropTargetImg, {
+        viewMode: 1,
+        autoCropArea: 0.9,
+        background: false,
+        responsive: true,
+        checkOrientation: false,
+      });
+    };
+
+    if (cropTargetImg.complete) {
+      initCropper();
+    } else {
+      cropTargetImg.onload = initCropper;
+    }
+  }
+
+  function closeCropModal() {
+    cropModal.classList.remove('open');
+    if (activeCropper) {
+      activeCropper.destroy();
+      activeCropper = null;
+    }
+    activeEntry = null;
+  }
+
+  document.getElementById('cropCancelBtn').addEventListener('click', closeCropModal);
+
+  document.getElementById('cropConfirmBtn').addEventListener('click', () => {
+    if (!activeCropper || !activeEntry) return;
+
+    // No target size passed: Cropper.js outputs the crop at the image's
+    // own native resolution, so nothing is downscaled or recompressed.
+    const canvas = activeCropper.getCroppedCanvas();
+    const container = document.getElementById(activeEntry.previewId);
+    if (container) {
+      container.innerHTML = '';
+      canvas.classList.add('cropped');
+      container.appendChild(canvas);
+      const status = document.createElement('span');
+      status.className = 'status ok';
+      status.textContent = 'Manually cropped';
+      container.appendChild(status);
+      container.appendChild(renderFixCropButton(activeEntry));
+    }
+    closeCropModal();
   });
 </script>
 </body>
