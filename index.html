@@ -35,7 +35,25 @@
   .subtitle {
     color: var(--muted);
     font-size: 14px;
-    margin-bottom: 28px;
+    margin-bottom: 12px;
+  }
+  .cvstatus {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cvstatus .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--warn);
+    flex-shrink: 0;
+  }
+  .cvstatus.ready .dot {
+    background: var(--ok);
   }
   .dropzone {
     border: 2px dashed var(--border);
@@ -98,16 +116,18 @@
     color: var(--warn);
   }
   .fileitem {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
     padding: 10px 16px;
-    font-size: 13px;
     border-bottom: 1px solid var(--border);
   }
   .fileitem:last-child {
     border-bottom: none;
+  }
+  .fileitem .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
   }
   .fileitem .left {
     display: flex;
@@ -136,12 +156,36 @@
     font-size: 11px;
     flex-shrink: 0;
   }
+  .preview {
+    margin-top: 10px;
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  .preview canvas, .preview img {
+    max-width: 140px;
+    max-height: 140px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    display: block;
+  }
+  .preview .status {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .preview .status.ok {
+    color: var(--ok);
+  }
+  .preview .status.warn {
+    color: var(--warn);
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Document Processor — V0.1</h1>
-  <div class="subtitle">Step 3: files are grouped by document type and ordered by trailing page number.</div>
+  <div class="subtitle">Step 4: images are auto-cropped to the document edges.</div>
+  <div class="cvstatus" id="cvstatus"><span class="dot"></span><span id="cvstatusText">Loading edge-detection engine…</span></div>
 
   <label class="dropzone" id="dropzone">
     <p>Click to choose files, or drag and drop them here</p>
@@ -152,7 +196,25 @@
   <div class="groups" id="groups"></div>
 </div>
 
+<script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvScriptLoaded();" type="text/javascript"></script>
+<script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
+
 <script>
+  // ---- OpenCV / jscanify readiness ----
+  let cvReady = false;
+  let resolveCvReady;
+  const cvReadyPromise = new Promise(resolve => { resolveCvReady = resolve; });
+
+  function onOpenCvScriptLoaded() {
+    cv['onRuntimeInitialized'] = () => {
+      cvReady = true;
+      const statusEl = document.getElementById('cvstatus');
+      statusEl.classList.add('ready');
+      document.getElementById('cvstatusText').textContent = 'Edge-detection engine ready';
+      resolveCvReady();
+    };
+  }
+
   // ---- Document types & aliases (editable config for now; config screen comes later) ----
   const DOCUMENT_TYPES = [
     { seq: 1,  name: "Police Verification",   aliases: ["police"] },
@@ -169,8 +231,6 @@
     { seq: 12, name: "Passbook",              aliases: ["passbook", "bank account"] },
   ];
 
-  // Flatten to a single list of {alias, type} pairs, so we can find the
-  // longest matching alias across ALL types at once (most-specific wins).
   const ALIAS_INDEX = DOCUMENT_TYPES.flatMap(type =>
     type.aliases.map(alias => ({ alias: alias.toLowerCase(), type }))
   );
@@ -178,20 +238,14 @@
   function classify(filename) {
     const lower = filename.toLowerCase();
     let best = null;
-
     for (const entry of ALIAS_INDEX) {
       if (lower.includes(entry.alias)) {
-        if (!best || entry.alias.length > best.alias.length) {
-          best = entry;
-        }
+        if (!best || entry.alias.length > best.alias.length) best = entry;
       }
     }
-
     return best ? best.type : null;
   }
 
-  // Trailing number just before the extension orders pages within a group.
-  // e.g. "father aadhar 1.jpg" -> 1, "12th 2.jpg" -> 2, "resume.pdf" -> null
   function extractPageNumber(filename) {
     const base = filename.replace(/\.[^/.]+$/, '');
     const match = base.match(/(\d+)\s*$/);
@@ -204,20 +258,34 @@
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
+  // ---- Auto-crop ----
+  // Crops to the detected document edges without resizing beyond the
+  // original pixel dimensions (no upscaling, no recompression).
+  function autoCropImage(imgEl) {
+    try {
+      const scanner = new jscanify();
+      const result = scanner.extractPaper(imgEl, imgEl.naturalWidth, imgEl.naturalHeight);
+      return result; // canvas, or null if no document edges were found
+    } catch (err) {
+      return null;
+    }
+  }
+
   // ---- UI wiring ----
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
   const groupsEl = document.getElementById('groups');
   const countEl = document.getElementById('count');
+  let previewCounter = 0;
 
   function buildGroups(files) {
-    const byType = new Map(); // type.name -> array of {file, pageNum}
+    const byType = new Map();
     const unclassified = [];
 
     files.forEach(file => {
       const type = classify(file.name);
       const pageNum = extractPageNumber(file.name);
-      const entry = { file, pageNum };
+      const entry = { file, pageNum, previewId: 'preview-' + (previewCounter++) };
 
       if (!type) {
         unclassified.push(entry);
@@ -227,8 +295,6 @@
       byType.get(type.name).push(entry);
     });
 
-    // Order pages within each group: numbered pages first (ascending),
-    // then anything without a trailing number, in original selection order.
     for (const entries of byType.values()) {
       entries.sort((a, b) => {
         if (a.pageNum === null && b.pageNum === null) return 0;
@@ -247,69 +313,94 @@
 
     const header = document.createElement('div');
     header.className = 'group-header';
-
-    const typeEl = document.createElement('div');
-    typeEl.className = 'type';
-    typeEl.textContent = title;
-
-    const countEl = document.createElement('div');
-    countEl.className = 'filecount';
-    countEl.textContent = entries.length + (entries.length === 1 ? ' file' : ' files');
-
-    header.appendChild(typeEl);
-    header.appendChild(countEl);
+    header.innerHTML =
+      `<div class="type">${title}</div>` +
+      `<div class="filecount">${entries.length} file${entries.length === 1 ? '' : 's'}</div>`;
     card.appendChild(header);
 
     entries.forEach((entry, i) => {
       const item = document.createElement('div');
       item.className = 'fileitem';
 
-      const left = document.createElement('div');
-      left.className = 'left';
+      const isImage = entry.file.type.startsWith('image/');
+      const pageBadge = !isUnclassified ? `<span class="pagebadge">Page ${i + 1}</span>` : '';
 
-      if (!isUnclassified) {
-        const badge = document.createElement('span');
-        badge.className = 'pagebadge';
-        badge.textContent = 'Page ' + (i + 1);
-        left.appendChild(badge);
-      }
+      item.innerHTML =
+        `<div class="row">` +
+          `<div class="left">${pageBadge}<span class="name">${entry.file.name}</span></div>` +
+          `<span class="size">${formatSize(entry.file.size)}</span>` +
+        `</div>` +
+        (isImage
+          ? `<div class="preview" id="${entry.previewId}"><span class="status">Waiting for edge detection…</span></div>`
+          : `<div class="preview"><span class="status">Not an image — no crop preview in this step</span></div>`);
 
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = entry.file.name;
-      left.appendChild(name);
-
-      const size = document.createElement('span');
-      size.className = 'size';
-      size.textContent = formatSize(entry.file.size);
-
-      item.appendChild(left);
-      item.appendChild(size);
       card.appendChild(item);
     });
 
     return card;
   }
 
+  async function processCropPreview(entry) {
+    const container = document.getElementById(entry.previewId);
+    if (!container) return;
+
+    await cvReadyPromise;
+    container.querySelector('.status').textContent = 'Detecting document edges…';
+
+    const url = URL.createObjectURL(entry.file);
+    const img = new Image();
+    img.onload = () => {
+      const cropped = autoCropImage(img);
+      container.innerHTML = '';
+
+      if (cropped) {
+        cropped.classList.add('cropped');
+        container.appendChild(cropped);
+        const status = document.createElement('span');
+        status.className = 'status ok';
+        status.textContent = 'Auto-cropped';
+        container.appendChild(status);
+      } else {
+        const thumb = document.createElement('img');
+        thumb.src = url;
+        container.appendChild(thumb);
+        const status = document.createElement('span');
+        status.className = 'status warn';
+        status.textContent = "Couldn't detect edges — using original";
+        container.appendChild(status);
+      }
+    };
+    img.onerror = () => {
+      const container2 = document.getElementById(entry.previewId);
+      if (container2) container2.innerHTML = '<span class="status warn">Couldn\'t load image</span>';
+    };
+    img.src = url;
+  }
+
   function renderFiles(files) {
     groupsEl.innerHTML = '';
+    previewCounter = 0;
     countEl.textContent = files.length
       ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
       : '';
 
     const { byType, unclassified } = buildGroups(files);
+    const imageEntries = [];
 
-    // Render in master sequence order, skipping types with no files.
     DOCUMENT_TYPES.forEach(type => {
       const entries = byType.get(type.name);
       if (entries && entries.length) {
         groupsEl.appendChild(renderGroupCard(type.name, entries, false));
+        entries.forEach(e => { if (e.file.type.startsWith('image/')) imageEntries.push(e); });
       }
     });
 
     if (unclassified.length) {
       groupsEl.appendChild(renderGroupCard('Unclassified', unclassified, true));
+      unclassified.forEach(e => { if (e.file.type.startsWith('image/')) imageEntries.push(e); });
     }
+
+    imageEntries.forEach(entry => processCropPreview(entry));
   }
 
   fileInput.addEventListener('change', (e) => {
