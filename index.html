@@ -195,6 +195,50 @@
     border-color: var(--accent);
   }
 
+  .section-title {
+    font-size: 16px;
+    margin: 32px 0 4px;
+  }
+  .final-order {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .final-order-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .final-order-item .drag-handle {
+    cursor: grab;
+    color: var(--muted);
+    font-size: 14px;
+    user-select: none;
+  }
+  .final-order-item .order-num {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    width: 20px;
+    flex-shrink: 0;
+  }
+  .final-order-item .order-name {
+    flex: 1;
+    font-size: 14px;
+  }
+  .final-order-item .order-count {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .final-order-item.sortable-ghost {
+    opacity: 0.4;
+  }
+
   /* Crop modal */
   .crop-modal {
     position: fixed;
@@ -263,7 +307,7 @@
 <body>
 <div class="wrap">
   <h1>Document Processor — V0.1</h1>
-  <div class="subtitle">Step 5: fix any crop by hand when auto-crop gets it wrong.</div>
+  <div class="subtitle">Step 6: arrange the final document sequence — drag to reorder if needed.</div>
   <div class="cvstatus" id="cvstatus"><span class="dot"></span><span id="cvstatusText">Loading edge-detection engine…</span></div>
 
   <label class="dropzone" id="dropzone">
@@ -273,6 +317,12 @@
 
   <div class="count" id="count"></div>
   <div class="groups" id="groups"></div>
+
+  <div class="final-order-wrap" id="finalOrderWrap" style="display:none;">
+    <h2 class="section-title">Final Order</h2>
+    <div class="subtitle">Auto-arranged by the master sequence — drag the handle to reorder if needed.</div>
+    <div class="final-order" id="finalOrderList"></div>
+  </div>
 </div>
 
 <!-- Manual crop modal -->
@@ -292,6 +342,7 @@
 <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvScriptLoaded();" type="text/javascript"></script>
 <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
 
 <script>
   // ---- OpenCV / jscanify readiness ----
@@ -370,6 +421,8 @@
   const groupsEl = document.getElementById('groups');
   const countEl = document.getElementById('count');
   let previewCounter = 0;
+  let lastByType = new Map();
+  let finalOrderSortable = null;
 
   function buildGroups(files) {
     const byType = new Map();
@@ -492,6 +545,7 @@
       : '';
 
     const { byType, unclassified } = buildGroups(files);
+    lastByType = byType;
     const imageEntries = [];
 
     DOCUMENT_TYPES.forEach(type => {
@@ -508,6 +562,58 @@
     }
 
     imageEntries.forEach(entry => processCropPreview(entry));
+    renderFinalOrder(byType);
+  }
+
+  function renderFinalOrder(byType) {
+    const wrap = document.getElementById('finalOrderWrap');
+    const list = document.getElementById('finalOrderList');
+    list.innerHTML = '';
+
+    const present = DOCUMENT_TYPES.filter(type => byType.has(type.name));
+
+    if (!present.length) {
+      wrap.style.display = 'none';
+      if (finalOrderSortable) { finalOrderSortable.destroy(); finalOrderSortable = null; }
+      return;
+    }
+    wrap.style.display = 'block';
+
+    present.forEach((type, i) => {
+      const entries = byType.get(type.name);
+      const item = document.createElement('div');
+      item.className = 'final-order-item';
+      item.dataset.type = type.name;
+      item.innerHTML =
+        `<span class="drag-handle">☰</span>` +
+        `<span class="order-num">${i + 1}</span>` +
+        `<span class="order-name">${type.name}</span>` +
+        `<span class="order-count">${entries.length} file${entries.length === 1 ? '' : 's'}</span>`;
+      list.appendChild(item);
+    });
+
+    if (finalOrderSortable) finalOrderSortable.destroy();
+    finalOrderSortable = Sortable.create(list, {
+      handle: '.drag-handle',
+      animation: 150,
+      onEnd: renumberFinalOrder,
+    });
+  }
+
+  function renumberFinalOrder() {
+    document.querySelectorAll('#finalOrderList .final-order-item').forEach((item, i) => {
+      item.querySelector('.order-num').textContent = i + 1;
+    });
+  }
+
+  function getCurrentSequence() {
+    // Reads the live drag order and pairs each type back to its files —
+    // this is what Step 8 (merge) will read from to build the PDF.
+    const list = document.getElementById('finalOrderList');
+    return Array.from(list.querySelectorAll('.final-order-item')).map(item => {
+      const typeName = item.dataset.type;
+      return { typeName, entries: lastByType.get(typeName) || [] };
+    });
   }
 
   fileInput.addEventListener('change', (e) => {
