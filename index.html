@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OM Logistics — Document Processor</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #161c2c;
+    --border: #2a3247;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --accent: #4f7cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 40px 20px;
+  }
+  .wrap {
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 22px;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 28px;
+  }
+  .dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 40px 20px;
+    text-align: center;
+    background: var(--panel);
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: var(--accent);
+  }
+  .dropzone p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .dropzone input {
+    display: none;
+  }
+  .filelist {
+    margin-top: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .fileitem {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 14px;
+  }
+  .fileitem .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 12px;
+  }
+  .fileitem .size {
+    color: var(--muted);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .count {
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Document Processor — V0.1</h1>
+  <div class="subtitle">Step 1: select employee documents and confirm they're all picked up.</div>
+
+  <label class="dropzone" id="dropzone">
+    <p>Click to choose files, or drag and drop them here</p>
+    <input type="file" id="fileInput" multiple>
+  </label>
+
+  <div class="count" id="count"></div>
+  <div class="filelist" id="filelist"></div>
+</div>
+
+<script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const filelist = document.getElementById('filelist');
+  const countEl = document.getElementById('count');
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function renderFiles(files) {
+    filelist.innerHTML = '';
+    countEl.textContent = files.length
+      ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
+      : '';
+
+    files.forEach(file => {
+      const item = document.createElement('div');
+      item.className = 'fileitem';
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = file.name;
+
+      const size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = formatSize(file.size);
+
+      item.appendChild(name);
+      item.appendChild(size);
+      filelist.appendChild(item);
+    });
+  }
+
+  fileInput.addEventListener('change', (e) => {
+    renderFiles(Array.from(e.target.files));
+  });
+
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+
+  dropzone.addEventListener('dragleave', () => {
+    dropzone.classList.remove('dragover');
+  });
+
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files);
+    fileInput.files = e.dataTransfer.files;
+    renderFiles(files);
+  });
+</script>
+</body>
+</html>
