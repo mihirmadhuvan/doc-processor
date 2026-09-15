@@ -8,6 +8,7 @@
   :root {
     --bg: #0f1420;
     --panel: #161c2c;
+    --panel-2: #1c2337;
     --border: #2a3247;
     --text: #e6e9f0;
     --muted: #8b93a7;
@@ -57,27 +58,73 @@
   .dropzone input {
     display: none;
   }
-  .filelist {
+  .count {
+    margin-top: 16px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .groups {
     margin-top: 24px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 16px;
   }
-  .fileitem {
+  .group {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 14px;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .group-header .type {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .group-header .filecount {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .group.unclassified .group-header {
+    background: rgba(224, 161, 59, 0.1);
+  }
+  .group.unclassified .group-header .type {
+    color: var(--warn);
+  }
+  .fileitem {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 12px;
-    font-size: 14px;
+    padding: 10px 16px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .fileitem:last-child {
+    border-bottom: none;
   }
   .fileitem .left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     overflow: hidden;
-    flex: 1;
     min-width: 0;
+  }
+  .pagebadge {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(79, 124, 255, 0.12);
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
   }
   .fileitem .name {
     overflow: hidden;
@@ -86,35 +133,15 @@
   }
   .fileitem .size {
     color: var(--muted);
-    font-size: 12px;
-  }
-  .badge {
+    font-size: 11px;
     flex-shrink: 0;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 999px;
-    white-space: nowrap;
-  }
-  .badge.matched {
-    background: rgba(59, 196, 143, 0.15);
-    color: var(--ok);
-  }
-  .badge.unclassified {
-    background: rgba(224, 161, 59, 0.15);
-    color: var(--warn);
-  }
-  .count {
-    margin-top: 16px;
-    color: var(--muted);
-    font-size: 13px;
   }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Document Processor — V0.1</h1>
-  <div class="subtitle">Step 2: files are now matched to a document type by filename.</div>
+  <div class="subtitle">Step 3: files are grouped by document type and ordered by trailing page number.</div>
 
   <label class="dropzone" id="dropzone">
     <p>Click to choose files, or drag and drop them here</p>
@@ -122,7 +149,7 @@
   </label>
 
   <div class="count" id="count"></div>
-  <div class="filelist" id="filelist"></div>
+  <div class="groups" id="groups"></div>
 </div>
 
 <script>
@@ -160,14 +187,16 @@
       }
     }
 
-    return best ? best.type.name : "Unclassified";
+    return best ? best.type : null;
   }
 
-  // ---- UI wiring ----
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('fileInput');
-  const filelist = document.getElementById('filelist');
-  const countEl = document.getElementById('count');
+  // Trailing number just before the extension orders pages within a group.
+  // e.g. "father aadhar 1.jpg" -> 1, "12th 2.jpg" -> 2, "resume.pdf" -> null
+  function extractPageNumber(filename) {
+    const base = filename.replace(/\.[^/.]+$/, '');
+    const match = base.match(/(\d+)\s*$/);
+    return match ? parseInt(match[1], 10) : null;
+  }
 
   function formatSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
@@ -175,40 +204,112 @@
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
-  function renderFiles(files) {
-    filelist.innerHTML = '';
-    countEl.textContent = files.length
-      ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
-      : '';
+  // ---- UI wiring ----
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const groupsEl = document.getElementById('groups');
+  const countEl = document.getElementById('count');
+
+  function buildGroups(files) {
+    const byType = new Map(); // type.name -> array of {file, pageNum}
+    const unclassified = [];
 
     files.forEach(file => {
-      const detected = classify(file.name);
+      const type = classify(file.name);
+      const pageNum = extractPageNumber(file.name);
+      const entry = { file, pageNum };
 
+      if (!type) {
+        unclassified.push(entry);
+        return;
+      }
+      if (!byType.has(type.name)) byType.set(type.name, []);
+      byType.get(type.name).push(entry);
+    });
+
+    // Order pages within each group: numbered pages first (ascending),
+    // then anything without a trailing number, in original selection order.
+    for (const entries of byType.values()) {
+      entries.sort((a, b) => {
+        if (a.pageNum === null && b.pageNum === null) return 0;
+        if (a.pageNum === null) return 1;
+        if (b.pageNum === null) return -1;
+        return a.pageNum - b.pageNum;
+      });
+    }
+
+    return { byType, unclassified };
+  }
+
+  function renderGroupCard(title, entries, isUnclassified) {
+    const card = document.createElement('div');
+    card.className = 'group' + (isUnclassified ? ' unclassified' : '');
+
+    const header = document.createElement('div');
+    header.className = 'group-header';
+
+    const typeEl = document.createElement('div');
+    typeEl.className = 'type';
+    typeEl.textContent = title;
+
+    const countEl = document.createElement('div');
+    countEl.className = 'filecount';
+    countEl.textContent = entries.length + (entries.length === 1 ? ' file' : ' files');
+
+    header.appendChild(typeEl);
+    header.appendChild(countEl);
+    card.appendChild(header);
+
+    entries.forEach((entry, i) => {
       const item = document.createElement('div');
       item.className = 'fileitem';
 
       const left = document.createElement('div');
       left.className = 'left';
 
-      const name = document.createElement('div');
+      if (!isUnclassified) {
+        const badge = document.createElement('span');
+        badge.className = 'pagebadge';
+        badge.textContent = 'Page ' + (i + 1);
+        left.appendChild(badge);
+      }
+
+      const name = document.createElement('span');
       name.className = 'name';
-      name.textContent = file.name;
-
-      const size = document.createElement('div');
-      size.className = 'size';
-      size.textContent = formatSize(file.size);
-
+      name.textContent = entry.file.name;
       left.appendChild(name);
-      left.appendChild(size);
 
-      const badge = document.createElement('span');
-      badge.className = 'badge ' + (detected === 'Unclassified' ? 'unclassified' : 'matched');
-      badge.textContent = detected;
+      const size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = formatSize(entry.file.size);
 
       item.appendChild(left);
-      item.appendChild(badge);
-      filelist.appendChild(item);
+      item.appendChild(size);
+      card.appendChild(item);
     });
+
+    return card;
+  }
+
+  function renderFiles(files) {
+    groupsEl.innerHTML = '';
+    countEl.textContent = files.length
+      ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
+      : '';
+
+    const { byType, unclassified } = buildGroups(files);
+
+    // Render in master sequence order, skipping types with no files.
+    DOCUMENT_TYPES.forEach(type => {
+      const entries = byType.get(type.name);
+      if (entries && entries.length) {
+        groupsEl.appendChild(renderGroupCard(type.name, entries, false));
+      }
+    });
+
+    if (unclassified.length) {
+      groupsEl.appendChild(renderGroupCard('Unclassified', unclassified, true));
+    }
   }
 
   fileInput.addEventListener('change', (e) => {
