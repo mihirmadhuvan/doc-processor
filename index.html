@@ -338,6 +338,71 @@
     margin-top: 8px;
   }
 
+  /* Generate panel */
+  .generate-panel {
+    margin-top: 24px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .field-label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  #employeeName {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+  }
+  #employeeName:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .generate-btn {
+    width: 100%;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+  }
+  .generate-btn:disabled {
+    background: var(--panel-2);
+    border-color: var(--border);
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+  .generate-status {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .generate-status.error { color: #f0a0a0; }
+  .generate-status.ok { color: var(--ok); }
+  .download-link {
+    display: inline-block;
+    margin-top: 10px;
+    background: var(--ok);
+    color: #06210f;
+    font-size: 13px;
+    font-weight: 700;
+    text-decoration: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+  }
+
   /* Crop modal */
   .crop-modal {
     position: fixed;
@@ -406,7 +471,7 @@
 <body>
 <div class="wrap">
   <h1>Document Processor — V0.1</h1>
-  <div class="subtitle">Step 7: flag missing required documents and possible duplicates.</div>
+  <div class="subtitle">Step 8: merge everything into one ordered PDF and download it.</div>
   <div class="cvstatus" id="cvstatus"><span class="dot"></span><span id="cvstatusText">Loading edge-detection engine…</span></div>
 
   <label class="dropzone" id="dropzone">
@@ -429,6 +494,13 @@
     <h2 class="section-title">Final Order</h2>
     <div class="subtitle">Auto-arranged by the master sequence — drag the handle to reorder if needed.</div>
     <div class="final-order" id="finalOrderList"></div>
+
+    <div class="generate-panel" id="generatePanel">
+      <label class="field-label" for="employeeName">Employee name (used for the filename)</label>
+      <input type="text" id="employeeName" placeholder="e.g. Rahul Sharma" autocomplete="off">
+      <button id="generateBtn" class="generate-btn">Generate Final PDF</button>
+      <div id="generateStatus" class="generate-status"></div>
+    </div>
   </div>
 </div>
 
@@ -450,6 +522,7 @@
 <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@master/src/jscanify.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 
 <script>
   // ---- OpenCV / jscanify readiness ----
@@ -630,6 +703,7 @@
 
       if (cropped) {
         cropped.classList.add('cropped');
+        entry.croppedCanvas = cropped;
         container.appendChild(cropped);
         const status = document.createElement('span');
         status.className = 'status ok';
@@ -943,6 +1017,7 @@
     // No target size passed: Cropper.js outputs the crop at the image's
     // own native resolution, so nothing is downscaled or recompressed.
     const canvas = activeCropper.getCroppedCanvas();
+    activeEntry.croppedCanvas = canvas;
     const container = document.getElementById(activeEntry.previewId);
     if (container) {
       container.innerHTML = '';
@@ -956,6 +1031,184 @@
     }
     closeCropModal();
   });
+
+  // ---- Step 8: merge & download ----
+  const A4 = { w: 595.28, h: 841.89 };
+  const MARGIN = 18;
+
+  function canvasToBytes(canvas, mime, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (!blob) return reject(new Error('Could not read the cropped image'));
+        blob.arrayBuffer().then(resolve, reject);
+      }, mime, quality);
+    });
+  }
+
+  // Re-encodes anything pdf-lib can't embed directly (webp, heic, or an
+  // odd JPEG variant) by drawing it to a canvas first.
+  function reencodeViaCanvas(objectUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        canvasToBytes(c, 'image/jpeg', 0.95).then(
+          bytes => resolve({ bytes, isPng: false }),
+          reject
+        );
+      };
+      img.onerror = () => reject(new Error('Could not read image'));
+      img.src = objectUrl;
+    });
+  }
+
+  function drawImageOnPage(pdfDoc, img) {
+    const page = pdfDoc.addPage([A4.w, A4.h]);
+    const maxW = A4.w - MARGIN * 2;
+    const maxH = A4.h - MARGIN * 2;
+    const scale = Math.min(maxW / img.width, maxH / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    page.drawImage(img, {
+      x: (A4.w - w) / 2,
+      y: (A4.h - h) / 2,
+      width: w,
+      height: h,
+    });
+  }
+
+  async function addEntryToPdf(pdfDoc, entry, problems) {
+    const file = entry.file;
+    const { PDFDocument } = PDFLib;
+
+    if (file.type === 'application/pdf') {
+      try {
+        const src = await PDFDocument.load(await file.arrayBuffer());
+        const pages = await pdfDoc.copyPages(src, src.getPageIndices());
+        pages.forEach(p => pdfDoc.addPage(p));
+      } catch (err) {
+        problems.push(`${file.name} — couldn't be read (it may be password-protected or damaged)`);
+      }
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      problems.push(`${file.name} — unsupported file type, skipped`);
+      return;
+    }
+
+    let bytes, isPng;
+    try {
+      if (entry.croppedCanvas) {
+        // Cropped images must be re-encoded. PNG sources stay PNG (lossless);
+        // JPEG sources are re-saved at quality 0.95 at full pixel dimensions —
+        // visually indistinguishable, but technically a second encode.
+        isPng = file.type === 'image/png';
+        bytes = await canvasToBytes(
+          entry.croppedCanvas,
+          isPng ? 'image/png' : 'image/jpeg',
+          0.95
+        );
+      } else {
+        // Uncropped: embed the original bytes untouched — zero quality loss.
+        bytes = await file.arrayBuffer();
+        isPng = file.type === 'image/png';
+      }
+
+      let img;
+      try {
+        img = isPng ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+      } catch (err) {
+        const redone = await reencodeViaCanvas(entry.objectUrl);
+        img = await pdfDoc.embedJpg(redone.bytes);
+      }
+      drawImageOnPage(pdfDoc, img);
+    } catch (err) {
+      problems.push(`${file.name} — couldn't be added (${err.message})`);
+    }
+  }
+
+  function safeFilePart(text) {
+    return text.trim().replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '');
+  }
+
+  async function generateFinalPdf() {
+    const btn = document.getElementById('generateBtn');
+    const status = document.getElementById('generateStatus');
+    status.className = 'generate-status';
+    status.innerHTML = '';
+
+    const sequence = getCurrentSequence();
+    if (!sequence.length) {
+      status.className = 'generate-status error';
+      status.textContent = 'Nothing to merge yet — upload some documents first.';
+      return;
+    }
+
+    const missingRequired = DOCUMENT_TYPES.filter(t => t.required && !lastByType.has(t.name));
+    if (BLOCK_ON_MISSING_REQUIRED && missingRequired.length) {
+      status.className = 'generate-status error';
+      status.textContent =
+        'Cannot generate — these required documents are missing: ' +
+        missingRequired.map(t => t.name).join(', ') + '.';
+      return;
+    }
+
+    btn.disabled = true;
+    status.textContent = 'Building PDF…';
+
+    try {
+      const { PDFDocument } = PDFLib;
+      const pdfDoc = await PDFDocument.create();
+      const problems = [];
+
+      for (const { typeName, entries } of sequence) {
+        for (const entry of entries) {
+          status.textContent = `Adding ${typeName} — ${entry.file.name}…`;
+          await addEntryToPdf(pdfDoc, entry, problems);
+        }
+      }
+
+      if (pdfDoc.getPageCount() === 0) {
+        throw new Error('no pages could be added');
+      }
+
+      const bytes = await pdfDoc.save();
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+
+      const namePart = safeFilePart(document.getElementById('employeeName').value);
+      const filename = (namePart ? namePart + '_' : '') + 'Document_Package.pdf';
+
+      status.className = 'generate-status ok';
+      status.textContent = `Document package created — ${pdfDoc.getPageCount()} pages.`;
+
+      if (problems.length) {
+        const warn = document.createElement('div');
+        warn.className = 'generate-status error';
+        warn.innerHTML = 'Some files were skipped:<br>' + problems.join('<br>');
+        status.appendChild(warn);
+      }
+
+      const link = document.createElement('a');
+      link.className = 'download-link';
+      link.href = url;
+      link.download = filename;
+      link.textContent = 'Download ' + filename;
+      status.appendChild(document.createElement('br'));
+      status.appendChild(link);
+    } catch (err) {
+      status.className = 'generate-status error';
+      status.textContent = 'Unable to generate package: ' + err.message + '. Please try again.';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById('generateBtn').addEventListener('click', generateFinalPdf);
 </script>
 </body>
 </html>
