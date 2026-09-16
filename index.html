@@ -239,6 +239,105 @@
     opacity: 0.4;
   }
 
+  /* Checklist + duplicates */
+  .checklist {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 14px;
+    font-size: 13px;
+  }
+  .check-row .marker {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .check-row.ok .marker { background: var(--ok); }
+  .check-row.missing .marker { background: #e05c5c; }
+  .check-row.optional .marker { background: var(--muted); }
+  .check-row .check-name { flex: 1; }
+  .check-row .check-status { font-size: 11px; color: var(--muted); }
+  .check-row.ok .check-status { color: var(--ok); }
+  .check-row.missing .check-status { color: #e05c5c; }
+  .check-row.optional { opacity: 0.65; }
+
+  .banner {
+    margin-top: 14px;
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .banner.blocked {
+    background: rgba(224, 92, 92, 0.1);
+    border: 1px solid rgba(224, 92, 92, 0.35);
+    color: #f0a0a0;
+  }
+  .banner.clear {
+    background: rgba(59, 196, 143, 0.1);
+    border: 1px solid rgba(59, 196, 143, 0.3);
+    color: #9adfc4;
+  }
+
+  .dupe-card {
+    margin-top: 12px;
+    background: var(--panel);
+    border: 1px solid rgba(224, 161, 59, 0.4);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dupe-card .dupe-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--warn);
+    margin-bottom: 8px;
+  }
+  .dupe-file {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+  .dupe-file .dupe-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dupe-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+  }
+  .dupe-actions button {
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+  }
+  .dupe-actions button:hover { border-color: var(--accent); }
+  .dupe-note {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
   /* Crop modal */
   .crop-modal {
     position: fixed;
@@ -307,7 +406,7 @@
 <body>
 <div class="wrap">
   <h1>Document Processor — V0.1</h1>
-  <div class="subtitle">Step 6: arrange the final document sequence — drag to reorder if needed.</div>
+  <div class="subtitle">Step 7: flag missing required documents and possible duplicates.</div>
   <div class="cvstatus" id="cvstatus"><span class="dot"></span><span id="cvstatusText">Loading edge-detection engine…</span></div>
 
   <label class="dropzone" id="dropzone">
@@ -317,6 +416,14 @@
 
   <div class="count" id="count"></div>
   <div class="groups" id="groups"></div>
+
+  <div class="checks-wrap" id="checksWrap" style="display:none;">
+    <h2 class="section-title">Document Checklist</h2>
+    <div class="subtitle">Required documents are checked against the master list. Nothing is deleted automatically.</div>
+    <div class="checklist" id="checklist"></div>
+    <div id="checkBanner"></div>
+    <div id="dupes"></div>
+  </div>
 
   <div class="final-order-wrap" id="finalOrderWrap" style="display:none;">
     <h2 class="section-title">Final Order</h2>
@@ -360,20 +467,27 @@
   }
 
   // ---- Document types & aliases (editable config for now; config screen comes later) ----
+  // `required: false` marks a document as optional — missing optional docs
+  // are shown greyed out and never block finalizing. Flip any row's flag to
+  // change it; a proper config screen comes later.
   const DOCUMENT_TYPES = [
-    { seq: 1,  name: "Police Verification",   aliases: ["police"] },
-    { seq: 2,  name: "Resume",                aliases: ["resume"] },
-    { seq: 3,  name: "Salary Slips",          aliases: ["salary slips"] },
-    { seq: 4,  name: "Self Aadhaar",          aliases: ["aadhar"] },
-    { seq: 5,  name: "HSC Marksheet",         aliases: ["hsc", "12th"] },
-    { seq: 6,  name: "SSC Marksheet",         aliases: ["ssc", "10th"] },
-    { seq: 7,  name: "Graduation",            aliases: ["graduation"] },
-    { seq: 8,  name: "Mother Aadhaar Card",   aliases: ["mother aadhar"] },
-    { seq: 9,  name: "Father Aadhaar Card",   aliases: ["father aadhar"] },
-    { seq: 10, name: "Medical Fitness",       aliases: ["medical"] },
-    { seq: 11, name: "PAN",                   aliases: ["pan"] },
-    { seq: 12, name: "Passbook",              aliases: ["passbook", "bank account"] },
+    { seq: 1,  name: "Police Verification",   aliases: ["police"],                required: true  },
+    { seq: 2,  name: "Resume",                aliases: ["resume"],                required: true  },
+    { seq: 3,  name: "Salary Slips",          aliases: ["salary slips"],          required: false },
+    { seq: 4,  name: "Self Aadhaar",          aliases: ["aadhar"],                required: true  },
+    { seq: 5,  name: "HSC Marksheet",         aliases: ["hsc", "12th"],           required: true  },
+    { seq: 6,  name: "SSC Marksheet",         aliases: ["ssc", "10th"],           required: true  },
+    { seq: 7,  name: "Graduation",            aliases: ["graduation"],            required: false },
+    { seq: 8,  name: "Mother Aadhaar Card",   aliases: ["mother aadhar"],         required: true  },
+    { seq: 9,  name: "Father Aadhaar Card",   aliases: ["father aadhar"],         required: true  },
+    { seq: 10, name: "Medical Fitness",       aliases: ["medical"],               required: true  },
+    { seq: 11, name: "PAN",                   aliases: ["pan"],                   required: true  },
+    { seq: 12, name: "Passbook",              aliases: ["passbook", "bank account"], required: true },
   ];
+
+  // Blocks the (future) Generate PDF button when required docs are missing.
+  // Set to false to allow finalizing anyway.
+  const BLOCK_ON_MISSING_REQUIRED = true;
 
   const ALIAS_INDEX = DOCUMENT_TYPES.flatMap(type =>
     type.aliases.map(alias => ({ alias: alias.toLowerCase(), type }))
@@ -423,6 +537,8 @@
   let previewCounter = 0;
   let lastByType = new Map();
   let finalOrderSortable = null;
+  let currentFiles = [];
+  const dismissedDupes = new Set();
 
   function buildGroups(files) {
     const byType = new Map();
@@ -544,25 +660,169 @@
       ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
       : '';
 
+    currentFiles = files;
     const { byType, unclassified } = buildGroups(files);
     lastByType = byType;
     const imageEntries = [];
+    const allEntries = [];
 
     DOCUMENT_TYPES.forEach(type => {
       const entries = byType.get(type.name);
       if (entries && entries.length) {
         groupsEl.appendChild(renderGroupCard(type.name, entries, false));
-        entries.forEach(e => { if (e.file.type.startsWith('image/')) imageEntries.push(e); });
+        entries.forEach(e => {
+          allEntries.push(e);
+          if (e.file.type.startsWith('image/')) imageEntries.push(e);
+        });
       }
     });
 
     if (unclassified.length) {
       groupsEl.appendChild(renderGroupCard('Unclassified', unclassified, true));
-      unclassified.forEach(e => { if (e.file.type.startsWith('image/')) imageEntries.push(e); });
+      unclassified.forEach(e => {
+        allEntries.push(e);
+        if (e.file.type.startsWith('image/')) imageEntries.push(e);
+      });
     }
 
     imageEntries.forEach(entry => processCropPreview(entry));
     renderFinalOrder(byType);
+    renderChecklist(byType, files.length > 0);
+    renderDuplicates(allEntries);
+  }
+
+  // ---- Step 7: missing-document checklist ----
+  function renderChecklist(byType, hasFiles) {
+    const wrap = document.getElementById('checksWrap');
+    const list = document.getElementById('checklist');
+    const bannerEl = document.getElementById('checkBanner');
+    list.innerHTML = '';
+    bannerEl.innerHTML = '';
+
+    if (!hasFiles) {
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = 'block';
+
+    const missingRequired = [];
+
+    DOCUMENT_TYPES.forEach(type => {
+      const found = byType.has(type.name);
+      let cls, label;
+
+      if (found) {
+        const n = byType.get(type.name).length;
+        cls = 'ok';
+        label = `Found — ${n} file${n === 1 ? '' : 's'}`;
+      } else if (type.required) {
+        cls = 'missing';
+        label = 'Missing — required';
+        missingRequired.push(type.name);
+      } else {
+        cls = 'optional';
+        label = 'Missing — optional';
+      }
+
+      const row = document.createElement('div');
+      row.className = 'check-row ' + cls;
+      row.innerHTML =
+        `<span class="marker"></span>` +
+        `<span class="check-name">${type.name}</span>` +
+        `<span class="check-status">${label}</span>`;
+      list.appendChild(row);
+    });
+
+    const banner = document.createElement('div');
+    if (missingRequired.length) {
+      banner.className = 'banner blocked';
+      banner.innerHTML = BLOCK_ON_MISSING_REQUIRED
+        ? `<strong>Cannot finalize package.</strong> ${missingRequired.length} required document${missingRequired.length === 1 ? '' : 's'} missing: ${missingRequired.join(', ')}.`
+        : `<strong>${missingRequired.length} required document${missingRequired.length === 1 ? '' : 's'} missing:</strong> ${missingRequired.join(', ')}. Finalizing is still allowed.`;
+    } else {
+      banner.className = 'banner clear';
+      banner.innerHTML = `<strong>All required documents present.</strong> Ready to arrange and merge.`;
+    }
+    bannerEl.appendChild(banner);
+  }
+
+  // ---- Step 7: duplicate detection ----
+  // Exact-content match via SHA-256. This only flags genuinely identical
+  // files — a re-scan of the same page won't match, which is the honest
+  // trade-off for having zero false positives.
+  async function fileKey(file) {
+    try {
+      if (crypto && crypto.subtle) {
+        const buf = await file.arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', buf);
+        return 'h:' + Array.from(new Uint8Array(digest))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+    } catch (err) { /* fall through */ }
+    // Fallback if crypto.subtle isn't available (rare, non-secure context):
+    // name + size is weaker but still catches the common "copy" case.
+    return 'n:' + file.name.toLowerCase() + ':' + file.size;
+  }
+
+  async function renderDuplicates(entries) {
+    const container = document.getElementById('dupes');
+    container.innerHTML = '';
+    if (!entries.length) return;
+
+    const buckets = new Map();
+    for (const entry of entries) {
+      const key = await fileKey(entry.file);
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(entry);
+    }
+
+    for (const [key, group] of buckets) {
+      if (group.length < 2 || dismissedDupes.has(key)) continue;
+
+      const card = document.createElement('div');
+      card.className = 'dupe-card';
+
+      const title = document.createElement('div');
+      title.className = 'dupe-title';
+      title.textContent = `Possible duplicate — ${group.length} identical files`;
+      card.appendChild(title);
+
+      group.forEach(entry => {
+        const row = document.createElement('div');
+        row.className = 'dupe-file';
+        row.innerHTML =
+          `<span class="dupe-name">${entry.file.name}</span>` +
+          `<span class="size">${formatSize(entry.file.size)}</span>`;
+        card.appendChild(row);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'dupe-actions';
+
+      const keepBtn = document.createElement('button');
+      keepBtn.textContent = 'Keep Both';
+      keepBtn.onclick = () => { dismissedDupes.add(key); renderFiles(currentFiles); };
+
+      const removeBtn = document.createElement('button');
+      removeBtn.textContent = 'Remove Duplicate';
+      removeBtn.onclick = () => {
+        // Removes all but the first copy — never touches the original.
+        const toRemove = group.slice(1).map(e => e.file);
+        currentFiles = currentFiles.filter(f => !toRemove.includes(f));
+        renderFiles(currentFiles);
+      };
+
+      actions.appendChild(keepBtn);
+      actions.appendChild(removeBtn);
+      card.appendChild(actions);
+
+      const note = document.createElement('div');
+      note.className = 'dupe-note';
+      note.textContent = 'Removing only drops the extra copies from this session — your original files are untouched.';
+      card.appendChild(note);
+
+      container.appendChild(card);
+    }
   }
 
   function renderFinalOrder(byType) {
